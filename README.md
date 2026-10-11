@@ -8,9 +8,9 @@ A React + FastAPI application for exploring historical heatwave frequency, durat
 
 ## Screenshots
 
-| Desktop | Mobile |
-| --- | --- |
-| ![Desktop results view](docs/screenshots/desktop.png) | ![Mobile results view](docs/screenshots/mobile.png) |
+| Desktop | Mobile: results | Mobile: charts |
+| --- | --- | --- |
+| ![Desktop analysis view](docs/screenshots/desktop.png) | ![Mobile results view](docs/screenshots/mobile.png) | ![Mobile charts view](docs/screenshots/mobile-charts.png) |
 
 ## Architecture
 
