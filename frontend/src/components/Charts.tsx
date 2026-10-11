@@ -92,7 +92,7 @@ export default function Charts({ rows }: { rows: AnnualMetric[] }) {
               <YAxis
                 yAxisId="intensity"
                 orientation="right"
-                unit=" C"
+                unit=" °C"
                 width={55}
               />
               <Tooltip />
@@ -107,7 +107,7 @@ export default function Charts({ rows }: { rows: AnnualMetric[] }) {
               <Line
                 yAxisId="intensity"
                 dataKey="mean_intensity_c"
-                name="Mean intensity (C)"
+                name="Mean intensity (°C)"
                 stroke="#b66635"
                 strokeWidth={2}
                 dot={false}

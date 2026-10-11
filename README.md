@@ -2,13 +2,15 @@
 
 A React + FastAPI application for exploring historical heatwave frequency, duration and intensity at a selected location. It uses real Open-Meteo ERA5 reanalysis, a fixed regional percentile baseline, and MongoDB for raw weather and processed-result caching.
 
-**Scope:** Heatwaves only. Search a city or enter latitude/longitude. City names resolve to a representative point; the result is for an ERA5 grid cell, not a city-wide or state-wide spatial average. No sample metrics are presented as live results.
+**Scope:** Heatwaves only. Search a city or enter latitude/longitude. City names resolve to a representative point; the result is for an ERA5 grid cell, not a city-wide or state-wide spatial average.
 
 **Live demo:** https://climate-hazard-analyzer-8zzq.onrender.com (Render free tier: the first request after idle can take ~50 s to wake the service)
 
 ## Screenshots
 
-_Add a desktop results screenshot and a mobile screenshot._
+| Desktop | Mobile |
+| --- | --- |
+| ![Desktop results view](docs/screenshots/desktop.png) | ![Mobile results view](docs/screenshots/mobile.png) |
 
 ## Architecture
 
@@ -51,7 +53,7 @@ The included unauthenticated MongoDB is for local development, published only on
 
 ## Local development
 
-Requirements: Python 3.12, Node 22.22+ or a supported modern Node release, MongoDB 8.
+Requirements: Python 3.12, Node 22, MongoDB 8 (or the Compose `mongo` service).
 
 ```sh
 docker compose up -d mongo
@@ -85,7 +87,7 @@ Open http://localhost:5173. For custom backend settings, create `backend/.env` o
 | `CACHE_TTL_DAYS` | `30` | Raw and processed cache freshness |
 | `RATE_LIMIT_PER_MINUTE` | `20` | Per-client analysis requests per minute, per process |
 | `SEARCH_RATE_LIMIT_PER_MINUTE` | `60` | Separate per-client city-search budget, so typing cannot block analysis |
-| `TRUSTED_PROXY_HOPS` | `0` | Reverse proxies in front of the app. The client is the address this many entries from the right of `X-Forwarded-For`; left-hand entries are client-supplied and ignored. `1` for Compose (nginx) and Render |
+| `TRUSTED_PROXY_HOPS` | `0` | Reverse proxies in front of the app. The client is the address this many entries from the right of `X-Forwarded-For`; left-hand entries are client-supplied and ignored. `1` for Compose (nginx); see limitations for Render |
 | `PORT` | `8000` | Root Dockerfile HTTP port |
 | `FORWARDED_ALLOW_IPS` | Uvicorn default: loopback | Trusted proxy addresses; see security notes |
 | `TEST_MONGO_URI` | unset | Enables opt-in real MongoDB integration tests |
@@ -113,8 +115,9 @@ The threshold stays fixed when the analysis range changes. A pooled annual thres
 
 Annual heatwave counts at one point are small integers (often 0-3), so a headline like "heatwaves increased 400%" can come from 1 event versus 5. The app avoids that:
 
+- **In plain terms:** Mann-Kendall compares every pair of years and asks "is the later year higher or lower?". If later years are consistently higher (or lower) more often than chance would allow, the trend is called significant. Sen's slope is the median of the year-to-year slopes across all pairs, so it gives a typical change in events per decade that one freak year cannot distort.
 - **Significance:** a two-sided **Mann-Kendall** test (tie-corrected, p < 0.05) with **Sen's slope** in events/decade, over at least ten well-covered years. Both are rank-based, so one extreme year cannot drive the result. The test assumes independent years; serial correlation would make p-values optimistic, and no pre-whitening is applied.
-- **Insight text** leads with absolute numbers: mean events/year in the **first five versus last five calendar years** (non-overlapping, all ten years must pass coverage), followed by the Mann-Kendall verdict. Example from real data (Hyderabad, 1990-2025): "Heatwaves averaged 1.2 events/year in 1990-1994 and 0.4 in 2021-2025. Mann-Kendall finds no statistically significant trend (p = 0.50)". The earlier version said "decreased by 66.7%" for the same data.
+- **Insight text** leads with absolute numbers: mean events/year in the **first five versus last five calendar years** (non-overlapping, all ten years must pass coverage), followed by the Mann-Kendall verdict. Example from real data (Hyderabad, 1990-2025): "Heatwaves averaged 1.2 events/year in 1990-1994 and 0.4 in 2021-2025. Mann-Kendall finds no statistically significant trend (p = 0.50)". A bare percentage here would read as "down 66.7%", which is six events versus two.
 - **Percentages** appear in the insight only when the trend is significant *and* the early window averages at least one event a year. Below that, `percent_change` is `null` in the API.
 - Ordinary least squares (events/decade, R-squared) is still returned and drawn as a dashed visual guide, but it is not used for claims: count data violates its normal-residual assumption.
 - Trailing five-year event mean uses five actual calendar years, all with >=95% coverage. No shorter early-window averages are shown.
@@ -182,16 +185,21 @@ npm run build
 npm audit
 ```
 
-Backend tests (51, including opt-in MongoDB integration) cover 2/3/4+/10-day runs, values equal to and just above the threshold, two separate events, missing days and sparse dates, leap years, cross-year events, partial and single-year periods, physical-range limits, duplicates and conflicts, baseline coverage, Mann-Kendall known values and outlier robustness, suppression of percentages from a near-zero base, invalid and overflowing inputs, upstream failures/retries, request limits and caching. Frontend tests cover form defaults, invalid range, API error/retry state and CSV formula-injection safety. Lint: `ruff check backend` (config in `backend/ruff.toml`).
+Backend tests (54, including opt-in MongoDB integration) cover 2/3/4+/10-day runs, values equal to and just above the threshold, two separate events, missing days and sparse dates, leap years, cross-year events, partial and single-year periods, physical-range limits, duplicates and conflicts, baseline coverage, Mann-Kendall known values and outlier robustness, suppression of percentages from a near-zero base, invalid and overflowing inputs, upstream failures/retries, request limits and caching. Frontend tests (6) cover form defaults, invalid range, API error/retry state, trend significance labelling and CSV formula-injection safety. CI runs all of the above on every push. Lint: `ruff check backend` (config in `backend/ruff.toml`).
 
 ## Deployment
 
-Two options are included:
+The live demo runs as a **single Docker web service on Render** (free tier) with **MongoDB Atlas** (free M0 cluster):
 
-1. **Docker Compose on a host:** run the quick start, put the frontend behind TLS, and configure a protected MongoDB deployment, backups and trusted proxy addresses. Do not publish the development MongoDB port.
-2. **Single Docker web service:** build the repository-root Dockerfile; set `MONGO_URI` to an authenticated TLS MongoDB connection, `MONGO_DATABASE`, and the provider's HTTP `PORT`. React is served by FastAPI at `/`, with same-origin `/api`. `render.yaml` is a deployment blueprint requiring your MongoDB secret; no cloud resources have been created merely by adding the file. Confirm the host's plan, pricing, timeouts and proxy configuration before deployment.
+1. Atlas: create a database user with `readWrite` on the `climate` database, and allow network access from Render (Render's free tier has no static IP, so this means `0.0.0.0/0`, protected by the user's password).
+2. Render: New Web Service from this repository, runtime Docker (root `Dockerfile`), instance type Free, health check path `/api/v1/ready`.
+3. Environment: `MONGO_URI` (Atlas connection string, kept as a Render secret), `MONGO_DATABASE=climate`, `TRUSTED_PROXY_HOPS`.
 
-Do not claim deployment until the URL responds and a real analysis/cache hit has been verified. Cold analyses may exceed a hosting proxy's deadline even though individual requests are bounded; completed blocks remain cached for retry. For larger workloads, move analysis to a durable job queue with polling, rather than increasing timeouts indefinitely.
+The root Dockerfile builds the React app and serves it from FastAPI at `/`, so the UI and `/api` share one origin and no CORS configuration is needed. `render.yaml` describes the same service as a Blueprint.
+
+Docker Compose (see Quick start) is the alternative for a single host: put the frontend behind TLS and use an authenticated MongoDB with backups. Do not publish the development MongoDB port.
+
+Cold analyses of a new location download several decades of data and can take a minute; completed blocks stay cached, so a retry is fast. For heavier use, analysis would move to a background job queue with polling rather than longer HTTP timeouts.
 
 ## Assumptions, limitations and next improvements
 
@@ -206,7 +214,6 @@ Do not claim deployment until the URL responds and a real analysis/cache hit has
 
 ## AI tools used
 
-- **OpenAI Codex**: proposed the initial architecture and methodology, wrote most of the first implementation and tests, and drafted documentation.
-- **Claude Code**: final review against the brief. It found the misleading percentage insight, an unhandled 500 on overflowing numbers (`1e999`), and cache fragmentation from unrounded coordinates; it added Mann-Kendall/Sen's slope, the map picker and the extra edge-case tests.
+I used AI coding assistants throughout this project. OpenAI Codex generated much of the initial implementation, tests and documentation from my prompts. Claude Code reviewed the result against the brief: it caught a misleading percentage-based insight, an input-validation crash and caching and rate-limiting issues, and helped add the Mann-Kendall test, the map picker and more edge-case tests.
 
-I reviewed the changes, ran the checks listed above, and can explain or change any part of the code.
+I chose which suggestions to keep, made the calls on the heatwave definition and how trends are reported, ran and checked the tests, compared results against real data, and set up and debugged the Render and MongoDB Atlas deployment myself. I can walk through and change any part of the code.

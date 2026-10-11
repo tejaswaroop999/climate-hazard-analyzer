@@ -27,7 +27,7 @@ export default function Results({
     ],
     [
       "Peak temperature",
-      `${s.peak_temperature_c.toFixed(1)} C`,
+      `${s.peak_temperature_c.toFixed(1)} °C`,
       "Maximum across all valid days",
     ],
     [
@@ -136,7 +136,7 @@ export default function Results({
           <p className="eyebrow">THE METHOD</p>
           <h2>A consistent reference point</h2>
           <div className="threshold">
-            <strong>{data.threshold.temperature_c.toFixed(2)} C</strong>
+            <strong>{data.threshold.temperature_c.toFixed(2)} °C</strong>
             <span>95th percentile / 1991-2020 baseline</span>
           </div>
           <p>
@@ -186,8 +186,8 @@ export default function Results({
                 <th scope="col">Start</th>
                 <th scope="col">End</th>
                 <th scope="col">Duration</th>
-                <th scope="col">Peak (C)</th>
-                <th scope="col">Mean excess (C)</th>
+                <th scope="col">Peak (°C)</th>
+                <th scope="col">Mean excess (°C)</th>
               </tr>
             </thead>
             <tbody>
@@ -239,8 +239,8 @@ export default function Results({
                 <th scope="col">Year</th>
                 <th scope="col">Events</th>
                 <th scope="col">Days</th>
-                <th scope="col">Mean excess (C)</th>
-                <th scope="col">Max excess (C)</th>
+                <th scope="col">Mean excess (°C)</th>
+                <th scope="col">Max excess (°C)</th>
                 <th scope="col">Mean duration (days)</th>
                 <th scope="col">Longest duration (days)</th>
                 <th scope="col">5-year event mean</th>
