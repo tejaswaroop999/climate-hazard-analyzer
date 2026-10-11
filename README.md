@@ -4,7 +4,7 @@ A React + FastAPI application for exploring historical heatwave frequency, durat
 
 **Scope:** Heatwaves only. Search a city or enter latitude/longitude. City names resolve to a representative point; the result is for an ERA5 grid cell, not a city-wide or state-wide spatial average. No sample metrics are presented as live results.
 
-**Live demo:** _add deployed URL_
+**Live demo:** https://climate-hazard-analyzer-8zzq.onrender.com (Render free tier: the first request after idle can take ~50 s to wake the service)
 
 ## Screenshots
 
@@ -199,6 +199,7 @@ Do not claim deployment until the URL responds and a real analysis/cache hit has
 - The fixed 1991-2020 reference overlaps some historical analysis periods and is not a preindustrial reference. Changing the baseline is a deliberate algorithm/version change.
 - Screening thresholds, pooled seasonality, 95% coverage tolerance, boundary truncation and reanalysis resolution limit interpretation. There is no uncertainty interval or autocorrelation-adjusted significance test.
 - No authentication is provided for this public read/compute dashboard. Public deployments need shared quotas, monitoring and a cost budget.
+- On the live Render deployment, client-IP detection behind Render's proxy chain is not yet tuned, so per-client rate limiting is not effective there; it is verified locally and in Docker Compose behind nginx (tests cover spoofed `X-Forwarded-For`). The fix is to confirm the header layout Render sends and set `TRUSTED_PROXY_HOPS` to match.
 - Rate limits are in-process memory: they reset on restart and are per replica. `TRUSTED_PROXY_HOPS` must match the real proxy chain; too low groups all users under the proxy address, too high lets clients spoof their identity.
 - Upstream terms/quotas and revisions can change; caching reduces but does not eliminate dependence on the provider.
 - Future: calendar-day (seasonal) percentile threshold, autocorrelation-corrected Mann-Kendall, sensitivity analysis to the 95th/3-day choices, async job queue for cold requests, Redis-backed rate limits, bounding-box/polygon averaging, event CSV and PDF report. Map selection, annual CSV export, linear regression and Mann-Kendall are included.

@@ -55,14 +55,6 @@ def client_ip(request: Request) -> str:
     """Rightmost addresses are added by our own proxies; anything left of
     those is client-supplied and spoofable, so it is never used."""
     hops = settings.trusted_proxy_hops
-    # TEMPORARY: discover the real proxy header layout on Render; remove after.
-    logger.warning(
-        "proxy-debug xff=%r cf=%r true_client=%r peer=%r",
-        request.headers.get("x-forwarded-for"),
-        request.headers.get("cf-connecting-ip"),
-        request.headers.get("true-client-ip"),
-        request.client.host if request.client else None,
-    )
     if hops:
         forwarded = [
             part.strip()
