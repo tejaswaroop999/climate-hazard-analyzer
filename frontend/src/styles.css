@@ -371,6 +371,9 @@ small {
 .results {
   padding-top: 38px;
   display: grid;
+  /* minmax(0, ...) lets columns shrink so wide tables scroll inside their panel
+     instead of widening the whole page on phones. */
+  grid-template-columns: minmax(0, 1fr);
   gap: 24px;
 }
 .results-heading {
@@ -440,7 +443,7 @@ small {
 .chart-grid,
 .details-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 24px;
 }
 .chart-grid .panel {
@@ -682,7 +685,7 @@ footer {
   }
   .chart-grid,
   .details-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
   .empty-facts {
     flex-direction: column;
