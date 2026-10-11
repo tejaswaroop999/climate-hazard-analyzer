@@ -71,7 +71,21 @@ export interface Analysis {
       r_squared: number | null;
       years_used: number;
     } | null;
-    comparison: { percent_change: number | null } | null;
+    comparison: {
+      first_window: [number, number];
+      last_window: [number, number];
+      first_mean: number;
+      last_mean: number;
+      absolute_change: number;
+      percent_change: number | null;
+    } | null;
+    mann_kendall: {
+      p_value: number;
+      significant: boolean;
+      direction: string;
+      sen_slope_per_decade: number;
+      years_used: number;
+    } | null;
   };
   data_quality: Quality;
   baseline_data_quality: Quality;

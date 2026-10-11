@@ -727,3 +727,26 @@ footer {
 .duration-chart {
   grid-column: 1/-1;
 }
+.map-field {
+  margin-bottom: 20px;
+}
+.map {
+  /* Keeps Leaflet's internal z-indexes below the city search dropdown. */
+  isolation: isolate;
+  height: 260px;
+  border: 1px solid #d5ded6;
+  border-radius: 8px;
+  margin-bottom: 6px;
+  background: #eef3ee;
+}
+.map-loading {
+  display: grid;
+  place-items: center;
+  color: #61796b;
+  font-size: 12px;
+}
+@media (max-width: 640px) {
+  .map {
+    height: 200px;
+  }
+}

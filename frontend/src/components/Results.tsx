@@ -11,6 +11,7 @@ export default function Results({
 }) {
   const [page, setPage] = useState(0);
   const { summary: s, data_quality: q, trend } = data;
+  const mk = trend.mann_kendall;
   const pages = Math.ceil(data.events.length / 10);
   const cards = [
     ["Total heatwaves", s.total_events.toLocaleString(), "Events of 3+ days"],
@@ -31,10 +32,14 @@ export default function Results({
     ],
     [
       "Frequency trend",
-      trend.regression
-        ? `${trend.regression.slope_events_per_decade >= 0 ? "+" : ""}${trend.regression.slope_events_per_decade.toFixed(2)}`
+      mk
+        ? `${mk.sen_slope_per_decade >= 0 ? "+" : ""}${mk.sen_slope_per_decade.toFixed(2)} / decade`
         : "Unavailable",
-      "Events / decade (regression)",
+      mk
+        ? mk.significant
+          ? `Sen's slope; significant (p = ${mk.p_value.toFixed(3)})`
+          : `Sen's slope; not significant (p = ${mk.p_value.toFixed(2)})`
+        : "Needs 10+ well-covered years",
     ],
   ];
   return (
@@ -146,8 +151,10 @@ export default function Results({
           </p>
           <p>
             Trends require at least 10 years. Years below 95% coverage are
-            excluded. Five-year endpoint means use non-overlapping calendar
-            windows. Regression is descriptive, without a significance claim.
+            excluded. Significance comes from a Mann-Kendall test (p &lt; 0.05)
+            with Sen&apos;s slope; the dashed OLS line is a visual guide.
+            Percentages are shown only when the trend is significant and the
+            early period averages at least one event a year.
           </p>
           <p>
             This pooled annual threshold emphasizes the hottest season. It is a

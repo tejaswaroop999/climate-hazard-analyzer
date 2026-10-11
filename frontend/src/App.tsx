@@ -3,6 +3,7 @@ import type { FormEvent } from "react";
 import { analyze, searchRegions } from "./api";
 import type { Analysis, Region } from "./types";
 const Results = lazy(() => import("./components/Results"));
+const MapPicker = lazy(() => import("./components/MapPicker"));
 export default function App() {
   const [query, setQuery] = useState("");
   const [regions, setRegions] = useState<Region[]>([]);
@@ -196,6 +197,29 @@ export default function App() {
                   <small>More hazards planned</small>
                 </div>
               </div>
+              <Suspense
+                fallback={<div className="map map-loading">Loading map...</div>}
+              >
+                <MapPicker
+                  latitude={Number(latitude)}
+                  longitude={Number(longitude)}
+                  grid={
+                    result
+                      ? {
+                          latitude: result.source.grid_latitude,
+                          longitude: result.source.grid_longitude,
+                        }
+                      : null
+                  }
+                  disabled={loading}
+                  onPick={(lat, lon) => {
+                    setLatitude(String(lat));
+                    setLongitude(String(lon));
+                    setSelected(null);
+                    setQuery("");
+                  }}
+                />
+              </Suspense>
               <div className="coordinate-grid">
                 <div>
                   <label htmlFor="latitude">Latitude</label>
