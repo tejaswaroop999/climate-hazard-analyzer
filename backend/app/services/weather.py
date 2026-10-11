@@ -1,5 +1,6 @@
 import asyncio
 from datetime import date
+
 import httpx
 
 ARCHIVE_URL = "https://archive-api.open-meteo.com/v1/archive"
@@ -83,7 +84,7 @@ class WeatherProvider:
             if not isinstance(data.get("timezone"), str):
                 raise WeatherError("Weather provider did not identify its timezone")
             return {
-                "records": list(zip(days, values)),
+                "records": list(zip(days, values, strict=True)),
                 "grid_latitude": data.get("latitude"),
                 "grid_longitude": data.get("longitude"),
                 "timezone": data["timezone"],

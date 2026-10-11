@@ -1,9 +1,11 @@
 import asyncio
 import os
-from datetime import date, datetime, timedelta, timezone
 from copy import deepcopy
+from datetime import UTC, date, datetime, timedelta
 from unittest.mock import AsyncMock
+
 import pytest
+
 from app.repositories.cache import MongoCache, cache_key
 from app.schemas import AnalysisRequest
 from app.services.analysis import AnalysisService, select_records
@@ -20,7 +22,7 @@ class MemoryCache:
         return deepcopy(self.docs.get((collection, key)))
 
     async def put(self, collection, key, payload):
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         doc = {
             "payload": deepcopy(payload),
             "created_at": now,
@@ -84,11 +86,7 @@ def test_real_mongo_indexes_expiry_and_roundtrip():
             assert any(i.get("expireAfterSeconds") == 0 for i in indexes.values())
             await cache.db.analyses.update_one(
                 {"key": key},
-                {
-                    "$set": {
-                        "expires_at": datetime.now(timezone.utc) - timedelta(seconds=1)
-                    }
-                },
+                {"$set": {"expires_at": datetime.now(UTC) - timedelta(seconds=1)}},
             )
             assert await cache.get("analyses", key) is None
         finally:

@@ -1,7 +1,8 @@
-from datetime import datetime, timedelta, timezone
 import hashlib
 import json
-from pymongo import AsyncMongoClient, ASCENDING
+from datetime import UTC, datetime, timedelta
+
+from pymongo import ASCENDING, AsyncMongoClient
 
 
 class MongoCache:
@@ -24,11 +25,11 @@ class MongoCache:
     async def get(self, collection, key):
         # Mongo TTL cleanup is asynchronous; exclude expired documents ourselves.
         return await self.db[collection].find_one(
-            {"key": key, "expires_at": {"$gt": datetime.now(timezone.utc)}}, {"_id": 0}
+            {"key": key, "expires_at": {"$gt": datetime.now(UTC)}}, {"_id": 0}
         )
 
     async def put(self, collection, key, payload):
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         document = {
             "key": key,
             "created_at": now,

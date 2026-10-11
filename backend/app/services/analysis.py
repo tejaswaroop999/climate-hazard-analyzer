@@ -1,8 +1,10 @@
 import asyncio
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
+
 from fastapi.concurrency import run_in_threadpool
+
 from app.repositories.cache import cache_key
-from app.services.climate import analyze, ALGORITHM_VERSION
+from app.services.climate import ALGORITHM_VERSION, analyze
 from app.services.weather import MODEL, WeatherError
 
 
@@ -53,7 +55,7 @@ class AnalysisService:
             blocks = sorted({year // 10 * 10 for year in years})
             all_records, provenance = [], []
             for first in blocks:
-                last = min(first + 9, datetime.now(timezone.utc).year - 1)
+                last = min(first + 9, datetime.now(UTC).year - 1)
                 weather_key = cache_key(
                     {
                         "lat": request.latitude,

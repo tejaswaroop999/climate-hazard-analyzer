@@ -1,8 +1,10 @@
 import asyncio
 from datetime import date
+
 import httpx
 import pytest
-from app.services.weather import WeatherProvider, WeatherError
+
+from app.services.weather import WeatherError, WeatherProvider
 
 
 def fetch(body, status=200):
