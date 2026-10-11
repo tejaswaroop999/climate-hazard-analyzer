@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: climate-hazard-analyzer
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/v1/ready
+    envVars:
+      - key: MONGO_URI
+        sync: false
+      - key: MONGO_DATABASE
+        value: climate
+      - key: CORS_ORIGINS
+        value: ""
+      - key: CACHE_TTL_DAYS
+        value: "30"
+      - key: RATE_LIMIT_PER_MINUTE
+        value: "20"

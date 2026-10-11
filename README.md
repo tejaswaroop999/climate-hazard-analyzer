@@ -1,0 +1,202 @@
+# Climate Hazard Trend Analyzer
+
+A React + FastAPI application for exploring historical heatwave frequency, duration and intensity at a selected location. It uses real Open-Meteo ERA5 reanalysis, a fixed regional percentile baseline, and MongoDB for raw weather and processed-result caching.
+
+**Scope:** Heatwaves only. Search a city or enter latitude/longitude. City names resolve to a representative point; the result is for an ERA5 grid cell, not a city-wide or state-wide spatial average. No sample metrics are presented as live results.
+
+## Screenshots
+
+Placeholder: add a desktop results screenshot and a mobile screenshot after running the application against real data. Do not include the confidential case-study PDF.
+
+## Architecture
+
+```mermaid
+flowchart LR
+  UI[React / TypeScript / Recharts] --> API[FastAPI: validation + rate limit]
+  API --> Cache[(MongoDB analyses)]
+  API --> Service[Analysis service]
+  Service --> Raw[(MongoDB weather blocks)]
+  Service --> Provider[Open-Meteo ERA5 adapter]
+  Service --> Engine[Pure climate engine]
+  Engine --> Cache
+```
+
+The browser calls only `/api/v1`. Vite proxies to FastAPI during development; nginx proxies in Compose. A root Dockerfile also bundles the React build into FastAPI for a single web-service deployment with external MongoDB. Analysis computation runs in a threadpool so it does not block the async HTTP/database loop.
+
+## Technology choices
+
+- React, TypeScript and Vite: a small, typed client without an unnecessary application server.
+- Recharts: interactive annual plots, with accessible tables containing exact data.
+- FastAPI/Pydantic: explicit validation, async I/O, generated API documentation.
+- NumPy: transparent linear percentile and ordinary least squares calculations; pandas/scipy are unnecessary for this small daily series.
+- PyMongo async driver: direct MongoDB operations without an ORM or deprecated Motor dependency.
+- MongoDB: document-shaped analysis responses, reusable weather blocks, unique indexes and TTL retention.
+
+## Quick start: Docker
+
+Requirements: Docker with the Compose plugin and outbound HTTPS access to Open-Meteo.
+
+```sh
+cp .env.example .env
+# PowerShell alternative: Copy-Item .env.example .env
+docker compose up --build -d
+```
+
+Open http://localhost:8080. API docs: http://localhost:8000/docs. The first analysis downloads the baseline plus selected historical blocks and can take a few minutes. Later requests reuse MongoDB. `docker compose down` stops the services and preserves cached data in the named volume.
+
+The included unauthenticated MongoDB is for local development, published only on host loopback. Use authenticated TLS-enabled MongoDB for hosted deployments.
+
+## Local development
+
+Requirements: Python 3.12, Node 22.22+ or a supported modern Node release, MongoDB 8.
+
+```sh
+docker compose up -d mongo
+python -m venv .venv
+# POSIX:
+. .venv/bin/activate
+# PowerShell:
+# .\.venv\Scripts\Activate.ps1
+pip install -r backend/requirements.txt
+cd backend
+uvicorn app.main:app --reload
+```
+
+The default MongoDB URI is `mongodb://localhost:27017`. In another terminal:
+
+```sh
+cd frontend
+npm ci
+npm run dev
+```
+
+Open http://localhost:5173. For custom backend settings, create `backend/.env` or export environment variables. The repository-root `.env` is read by Compose, not by a backend started from its own directory.
+
+## Environment variables
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `MONGO_URI` | `mongodb://localhost:27017` | MongoDB connection string; keep credentials private |
+| `MONGO_DATABASE` | `climate` | Database name |
+| `CORS_ORIGINS` | localhost ports 5173, 8080 | Comma-separated permitted browser origins; empty for same-origin only |
+| `CACHE_TTL_DAYS` | `30` | Raw and processed cache freshness |
+| `RATE_LIMIT_PER_MINUTE` | `20` | Per-client limit, per application process |
+| `PORT` | `8000` | Root Dockerfile HTTP port |
+| `FORWARDED_ALLOW_IPS` | Uvicorn default: loopback | Trusted proxy addresses; see security notes |
+| `TEST_MONGO_URI` | unset | Enables opt-in real MongoDB integration tests |
+
+No provider API key is needed for the public non-commercial endpoint. Check provider terms and quotas before commercial use; paid-provider support is not implemented.
+
+## Data source
+
+[Open-Meteo Historical Weather API](https://open-meteo.com/en/docs/historical-weather-api), explicitly selecting **ERA5**, `temperature_2m_max`, Celsius, local timezone (`auto`). ERA5 has approximately 0.25-degree resolution and represents reanalysis estimates, not a local weather station. Using a single model prevents multi-model transitions from masquerading as climate changes. Location search uses the [Open-Meteo Geocoding API](https://open-meteo.com/en/docs/geocoding-api).
+
+Attribution appears in the app and JSON: Open-Meteo; Copernicus/ECMWF ERA5. Provider/model/grid coordinates/timezone are recorded in the response.
+
+## Heatwave methodology
+
+1. Fetch daily maximum temperatures for the point, including the fixed **1991-2020** reference period. This is a standard 30-year reference window ([WMO](https://wmo.int/media/news/updated-30-year-reference-period-reflects-changing-climate)); the app's heatwave indicator is its own explicit implementation, not a WMO-certified index.
+2. Require at least 95% valid observations in **every baseline year**. Otherwise return 422 rather than inventing a threshold.
+3. Calculate the pooled baseline 95th percentile with NumPy's `method="linear"` (index `(n-1)*0.95`, interpolated between neighboring sorted observations). This statistical interpolation does not interpolate missing weather observations.
+4. Detect runs of **at least three consecutive calendar days strictly above** that threshold. Equality does not qualify. Any missing, invalid or non-hot day breaks the run.
+5. Store start/end dates, duration, event peak, and mean/max temperature excess above threshold. Calculations retain full precision; the dashboard rounds only for presentation.
+6. Count each event once, in its start year. Assign heatwave days and daily excess intensities to the calendar year in which they occur. Annual mean/max event duration uses the start year. The summary peak is the maximum of **all valid selected observations**, even if it falls outside a heatwave.
+
+The threshold stays fixed when the analysis range changes. A pooled annual threshold emphasizes the hottest season; a seasonal/calendar-day percentile would answer a different question. Events at selected-period boundaries can be truncated; the app explicitly warns about this. Event discovery does not merge hot days across missing observations or across non-adjacent dates.
+
+### Honest trend reporting
+
+- Trailing five-year event mean uses five actual calendar years, all with >=95% coverage. No shorter early-window averages are shown.
+- Ordinary least squares estimates annual event-count slope, reported per decade, using at least ten eligible years and actual calendar-year spacing. R-squared is returned; it is null for constant counts. No p-value or significance claim is made.
+- A percentage insight compares the **first five versus last five calendar-year means**, only for periods of at least ten years and when all ten endpoint years pass coverage checks. Windows do not overlap. If the initial mean is zero, percentage change is undefined and the insight reports absolute means.
+- Duration and total heatwave-day regression slopes are also returned. Duration excludes no-event years (undefined duration), so it describes years with events rather than treating absence as a zero-day event.
+- Coverage below 95% excludes a year from trend estimation; observed annual counts remain available. Even 95% coverage can miss extremes or split events. This is descriptive analysis, not causal attribution, a health warning, or proof of statistical significance.
+
+## Data cleaning
+
+The engine reindexes onto the full requested calendar, including leap days. Nulls, nonnumeric values, booleans, infinities and NaNs become missing. Values outside -90 to 65 Celsius are rejected as physically implausible. Plausible regional extremes are retained rather than clipped by an arbitrary z-score. Identical duplicate dates collapse; conflicting duplicates become missing. Invalid dates and out-of-period observations are reported and ignored. There is **no temporal interpolation**.
+
+Malformed provider arrays, unexpected units, missing grid/timezone metadata and failed HTTP requests produce safe errors. Current/partial calendar years are rejected by the public API; the engine still handles partial-year input explicitly for independent use. An all-missing requested period is rejected. Quality metadata reports requested/valid/missing days, coverage, duplicates, conflicts, rejected values, ignored dates, interpolation count and warnings, separately for the analysis and baseline.
+
+## Caching and MongoDB schema
+
+Two collections use documents shaped as `{key, created_at, expires_at, payload}`:
+
+- `weather`: reusable **decade blocks**, keyed by exact requested coordinates, block bounds, model, unit, timezone mode and schema version. The current decade ends at the last completed year. Raw daily values are stored with grid/timezone metadata, then cleaned by the versioned engine; this preserves an audit trail of noisy input.
+- `analyses`: processed JSON, keyed by coordinates, full-year range, hazard, baseline, model, timezone, units and algorithm version.
+
+Keys are SHA-256 of canonical sorted JSON. Each collection has a unique key index and an expiry TTL index. Reads independently check `expires_at`, because MongoDB TTL deletion is asynchronous. Cold results are persisted and read back before returning. Freshness defaults to 30 days because historical reanalysis may be revised. Changing the algorithm invalidates processed results while retaining reusable weather blocks. Coordinates are not silently rounded.
+
+Bounded lock arrays coalesce duplicate requests/raw block downloads within one process. Four analyses and three upstream HTTP requests can run concurrently. Across multiple processes/replicas, unique MongoDB indexes protect document integrity but do not provide a distributed download lock.
+
+## API
+
+| Endpoint | Behavior |
+| --- | --- |
+| `GET /api/v1/health` | Process liveness/version |
+| `GET /api/v1/ready` | MongoDB readiness |
+| `GET /api/v1/regions/search?q=hyderabad` | Up to eight city candidates |
+| `POST /api/v1/analyze` | Persist/read analysis and return JSON |
+| `GET /docs` | Interactive OpenAPI documentation |
+
+```json
+{"latitude":17.385,"longitude":78.4867,"start_year":1990,"end_year":2025,"hazard":"heatwave"}
+```
+
+Response keys: `region`, `period`, `threshold`, `summary`, `annual_metrics`, `events`, `trend`, `data_quality`, `baseline_data_quality`, `source`, `algorithm_version`, `cache`.
+
+Errors: 422 invalid input/insufficient baseline; 413 oversized body; 429 rate limit (with Retry-After); 502 provider failure/malformed response; 503 storage unavailable; 504 overall analysis deadline. Unexpected errors return a generic 500 and are logged server-side.
+
+## Security and performance
+
+- Strict Pydantic schema, unknown fields forbidden, finite coordinates with valid ranges, integer years from 1940 through the last completed year, maximum 60 years. Search strings are bounded and reject control/markup characters.
+- Fixed HTTPS upstream URLs; user input cannot select an arbitrary host. No browser-to-weather requests, redirects or provider secrets.
+- 5-second connect/30-second request timeout; at most three attempts for network failures, 429 and 5xx, with bounded exponential backoff. Other 4xx responses are not retried. Overall analysis deadline: 240 seconds.
+- 4 KiB request limit, including streamed bodies, and a bounded per-client rate-limit map. Limiter is process-local; use one worker or a shared gateway/Redis limiter for replicas.
+- Explicit CORS, React's default escaped text rendering, frontend CSP, anti-framing and content-type protections. No HTML injection.
+- Containers run as non-root. Local Mongo/API ports bind to host loopback; only the frontend is externally bound in Compose.
+- Compose trusts its nginx proxy, which **overwrites** forwarded client-address headers. Backend HTTP access is loopback/internal only. For another host, configure only its actual trusted proxies before enabling forwarded headers; do not expose a backend that blindly trusts arbitrary forwarded headers. Rate limiting otherwise sees the proxy's address.
+- No committed secrets. Mongo startup/index creation is fail-fast; no in-memory production fallback conceals missing persistence.
+
+## Tests
+
+```sh
+cd backend
+python -m pytest -q
+# POSIX real Mongo integration:
+TEST_MONGO_URI=mongodb://localhost:27017 python -m pytest -q
+# PowerShell:
+# $env:TEST_MONGO_URI='mongodb://localhost:27017'; python -m pytest -q
+cd ../frontend
+npm test
+npm run build
+npm audit
+```
+
+Backend tests cover exact 2/3-day boundaries, equality, multiple/interrupted events, missing values and sparse dates, percentile baseline coverage, duplicates/outliers, leap-year/calendar aggregation, cross-year events, partial-year exclusions, trends and zero denominators, invalid inputs, upstream failures/retries, request limits and caching. MongoDB integration is opt-in locally and enabled in CI. Frontend tests cover form defaults, invalid range, API error/retry state and CSV safety.
+
+See `VERIFICATION.md` for checks actually run and any remaining infrastructure limits. Synthetic data exists only in tests; integration checks against the real provider must remain distinguishable from unit tests.
+
+## Deployment
+
+Two options are included:
+
+1. **Docker Compose on a host:** run the quick start, put the frontend behind TLS, and configure a protected MongoDB deployment, backups and trusted proxy addresses. Do not publish the development MongoDB port.
+2. **Single Docker web service:** build the repository-root Dockerfile; set `MONGO_URI` to an authenticated TLS MongoDB connection, `MONGO_DATABASE`, and the provider's HTTP `PORT`. React is served by FastAPI at `/`, with same-origin `/api`. `render.yaml` is a deployment blueprint requiring your MongoDB secret; no cloud resources have been created merely by adding the file. Confirm the host's plan, pricing, timeouts and proxy configuration before deployment.
+
+Do not claim deployment until the URL responds and a real analysis/cache hit has been verified. Cold analyses may exceed a hosting proxy's deadline even though individual requests are bounded; completed blocks remain cached for retry. For larger workloads, move analysis to a durable job queue with polling, rather than increasing timeouts indefinitely.
+
+## Assumptions, limitations and next improvements
+
+- Point/grid-cell analysis only; no polygon/state area weighting or bounding-box averaging. City selection satisfies the location workflow without implying spatial averaging.
+- The fixed 1991-2020 reference overlaps some historical analysis periods and is not a preindustrial reference. Changing the baseline is a deliberate algorithm/version change.
+- Screening thresholds, pooled seasonality, 95% coverage tolerance, boundary truncation and reanalysis resolution limit interpretation. There is no uncertainty interval or autocorrelation-adjusted significance test.
+- No authentication is provided for this public read/compute dashboard. Public deployments need shared quotas, monitoring and a cost budget. Exact coordinate cache keys can be fragmented by nearly identical requests.
+- Upstream terms/quotas and revisions can change; caching reduces but does not eliminate dependence on the provider.
+- Future: seasonally varying percentile, sensitivity analysis, boundary context, async job queue, distributed quotas, spatially weighted polygons, map selection, event CSV, and carefully justified uncertainty methods. CSV annual export and linear regression are already included; PDF export, maps and Mann-Kendall are intentionally deferred.
+
+## AI tools used
+
+OpenAI Codex was used to propose the architecture and methodology, implement the frontend/backend, develop tests, run available checks, review edge cases and draft documentation. The submission author should review and understand the implementation, reproduce validation, and take responsibility for the final submission. This repository does not claim that the author independently performed reviews or checks they have not yet performed.
+
+Use `INTERVIEW_NOTES.md` for the walkthrough and practice changes. Before submitting, replace the screenshot placeholder, verify a public repository and deployed URL, review all decisions, and complete any required disclosure in the submission form. The confidential brief is excluded from Git.
