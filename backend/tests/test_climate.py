@@ -1,13 +1,16 @@
 from datetime import date, timedelta
+
 import pytest
+
 from app.services.climate import (
-    detect_events,
-    normalize,
+    DataQualityError,
+    analyze,
     baseline_threshold,
     calculate_trend,
-    analyze,
-    DataQualityError,
     dates_between,
+    detect_events,
+    mann_kendall,
+    normalize,
 )
 
 
@@ -24,6 +27,11 @@ def series(values):
         ([31, 31, 20, 31, 31], 0, []),
         ([31, 31, None, 31, 31], 0, []),
         ([31, 30, 31], 0, []),
+        ([31] * 10, 1, [10]),
+        ([30, 30, 30], 0, []),
+        ([31, 31, 31, 30, 31, 31, 31], 2, [3, 3]),
+        ([31, 31, 31, None, 31, 31, 31], 2, [3, 3]),
+        ([30.0001, 30.0001, 30.0001], 1, [3]),
     ],
 )
 def test_detection(values, count, durations):
@@ -96,7 +104,10 @@ def test_trend():
     ]
     trend = calculate_trend(rows)
     assert trend["regression"]["slope_events_per_decade"] == pytest.approx(10)
+    # First-window mean is 2.0 events/year, enough base for a percentage.
     assert trend["comparison"]["percent_change"] == pytest.approx(250)
+    assert trend["mann_kendall"]["significant"]
+    assert "250% change" in trend["insight"]
     assert rows[4]["rolling_5_year_events"] == 2
     rows[0]["eligible_for_trend"] = False
     assert calculate_trend(rows)["comparison"] is None
@@ -136,3 +147,73 @@ def test_all_missing_selected_period_fails():
     base = [(d, 20) for d, _ in baseline()]
     with pytest.raises(DataQualityError, match="No valid observations"):
         analyze([], base, date(2000, 1, 1), date(2000, 12, 31))
+
+
+def eligible(counts, first_year=2000):
+    return [
+        {"year": first_year + i, "event_count": c, "eligible_for_trend": True}
+        for i, c in enumerate(counts)
+    ]
+
+
+def test_near_zero_base_suppresses_percentage():
+    # 1 event in the first five years versus 5 in the last: +400% would mislead.
+    trend = calculate_trend(eligible([0, 0, 1, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]))
+    assert trend["comparison"]["first_mean"] == pytest.approx(0.2)
+    assert trend["comparison"]["percent_change"] is None
+    assert "%" not in trend["insight"]
+
+
+def test_noisy_small_counts_report_no_significant_trend():
+    # Shape of the live Hyderabad result: 1.2 -> 0.4 events/year, pure noise.
+    trend = calculate_trend(eligible([2, 0, 3, 0, 1, 1, 2, 0, 1, 2, 0, 1, 0, 1, 0]))
+    assert not trend["mann_kendall"]["significant"]
+    assert "no statistically significant" in trend["insight"]
+    assert "%" not in trend["insight"]
+
+
+def test_mann_kendall_known_values():
+    result = mann_kendall(list(range(10)), list(range(10)))
+    assert result["s"] == 45
+    assert result["sen_slope_per_decade"] == pytest.approx(10)
+    assert result["p_value"] < 0.001
+    assert mann_kendall(list(range(10)), [5] * 10)["p_value"] == 1.0
+    assert mann_kendall(list(range(9)), list(range(9))) is None
+
+
+def test_mann_kendall_is_robust_to_one_outlier():
+    counts = [1] * 14 + [40]
+    result = mann_kendall(list(range(15)), counts)
+    assert result["sen_slope_per_decade"] == 0
+    assert not result["significant"]
+
+
+def test_single_year_has_no_trend():
+    base = [(d, 20) for d, _ in baseline()]
+    rows = [
+        (d.isoformat(), 25) for d in dates_between(date(2010, 1, 1), date(2010, 12, 31))
+    ]
+    result = analyze(rows, base, date(2010, 1, 1), date(2010, 12, 31))
+    assert result["trend"]["regression"] is None
+    assert result["trend"]["mann_kendall"] is None
+    assert result["trend"]["comparison"] is None
+    assert "Insufficient" in result["trend"]["insight"]
+    assert result["annual_metrics"][0]["heatwave_days"] == 365
+
+
+def test_extreme_but_plausible_values_are_kept():
+    rows = [("2000-01-01", -89.0), ("2000-01-02", 64.9), ("2000-01-03", 65.1)]
+    daily, quality = normalize(rows, date(2000, 1, 1), date(2000, 1, 3))
+    assert list(daily.values()) == [-89.0, 64.9, None]
+    assert quality["rejected_temperatures"] == 1
+
+
+def test_leap_year_coverage_uses_366_days():
+    base = [(d, 20) for d, _ in baseline()]
+    rows = [
+        (d.isoformat(), 25) for d in dates_between(date(2000, 1, 1), date(2000, 12, 30))
+    ]
+    result = analyze(rows, base, date(2000, 1, 1), date(2000, 12, 31))
+    year = result["annual_metrics"][0]
+    assert year["coverage_percentage"] == round(100 * 365 / 366, 2)
+    assert year["eligible_for_trend"]

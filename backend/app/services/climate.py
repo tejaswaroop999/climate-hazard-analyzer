@@ -2,13 +2,18 @@
 
 from collections import defaultdict
 from datetime import date, timedelta
-from math import isfinite
+from math import erfc, isfinite, sqrt
+
 import numpy as np
 
-ALGORITHM_VERSION = "heatwave-1.0.0"
+ALGORITHM_VERSION = "heatwave-1.1.0"
 BASELINE_START = date(1991, 1, 1)
 BASELINE_END = date(2020, 12, 31)
 MIN_COVERAGE = 0.95
+MIN_TREND_YEARS = 10
+SIGNIFICANCE_LEVEL = 0.05
+# Below one event a year, a percentage mostly reflects a handful of events.
+MIN_PERCENT_BASE_EVENTS = 1.0
 
 
 class DataQualityError(ValueError):
@@ -134,17 +139,94 @@ def regression_slope(rows, metric):
         for r in rows
         if r["eligible_for_trend"] and r.get(metric) is not None
     ]
-    if len(points) < 10:
+    if len(points) < MIN_TREND_YEARS:
         return None
     x, y = np.array(points, dtype=float).T
     centered = x - x.mean()
     return float(np.dot(centered, y - y.mean()) / np.dot(centered, centered)) * 10
 
 
+def mann_kendall(years, values):
+    """Two-sided Mann-Kendall test with tie correction, plus Sen's slope.
+
+    Assumes independent years; serial correlation would make p-values optimistic.
+    """
+    n = len(values)
+    if n < MIN_TREND_YEARS:
+        return None
+    x = np.asarray(years, dtype=float)
+    y = np.asarray(values, dtype=float)
+    i, j = np.triu_indices(n, k=1)
+    s = int(np.sign(y[j] - y[i]).sum())
+    _, ties = np.unique(y, return_counts=True)
+    variance = (
+        n * (n - 1) * (2 * n + 5) - np.sum(ties * (ties - 1) * (2 * ties + 5))
+    ) / 18
+    if variance <= 0:
+        z, p = 0.0, 1.0
+    else:
+        z = (s - np.sign(s)) / sqrt(variance)
+        p = erfc(abs(z) / sqrt(2))
+    sen = float(np.median((y[j] - y[i]) / (x[j] - x[i])))
+    if p < SIGNIFICANCE_LEVEL:
+        direction = "increasing" if s > 0 else "decreasing"
+    else:
+        direction = "no significant trend"
+    return {
+        "s": s,
+        "z": float(z),
+        "p_value": float(p),
+        "significant": p < SIGNIFICANCE_LEVEL,
+        "direction": direction,
+        "sen_slope_per_decade": sen * 10,
+        "years_used": n,
+    }
+
+
+def describe_trend(comparison, regression, mk):
+    """Lead with absolute numbers and a significance test, never a bare percentage."""
+    parts = []
+    if comparison:
+        windows = (
+            f"{comparison['first_window'][0]}-{comparison['first_window'][1]}",
+            f"{comparison['last_window'][0]}-{comparison['last_window'][1]}",
+        )
+        parts.append(
+            f"Heatwaves averaged {comparison['first_mean']:.1f} events/year in "
+            f"{windows[0]} and {comparison['last_mean']:.1f} in {windows[1]}."
+        )
+    if mk:
+        if mk["significant"]:
+            text = (
+                f"Mann-Kendall finds a statistically significant {mk['direction']} "
+                f"trend (p = {mk['p_value']:.3f}; Sen's slope "
+                f"{mk['sen_slope_per_decade']:+.2f} events/decade)."
+            )
+            change = comparison["percent_change"] if comparison else None
+            if change is not None:
+                text += f" That is a {change:+.0f}% change between the two windows."
+            parts.append(text)
+        else:
+            parts.append(
+                f"Mann-Kendall finds no statistically significant trend "
+                f"(p = {mk['p_value']:.2f}), so the difference may be year-to-year "
+                "variability."
+            )
+    elif regression:
+        parts.append(
+            f"Linear regression estimates {regression['slope_events_per_decade']:+.2f} "
+            "events per decade."
+        )
+    if not parts:
+        return "Insufficient well-covered years for a trend: at least ten are needed."
+    parts.append("This describes this grid cell; it does not attribute causes.")
+    return " ".join(parts)
+
+
 def calculate_trend(annual):
     eligible = [a for a in annual if a["eligible_for_trend"]]
     regression = None
-    if len(eligible) >= 10:
+    if len(eligible) >= MIN_TREND_YEARS:
         x = np.array([a["year"] for a in eligible], dtype=float)
         y = np.array([a["event_count"] for a in eligible], dtype=float)
         centered = x - x.mean()
@@ -160,7 +242,7 @@ def calculate_trend(annual):
         }
     comparison = None
     # Fixed, non-overlapping endpoint windows; no substitution of convenient years.
-    if len(annual) >= 10 and all(
+    if len(annual) >= MIN_TREND_YEARS and all(
         a["eligible_for_trend"] for a in annual[:5] + annual[-5:]
     ):
         first, last = annual[:5], annual[-5:]
@@ -172,7 +254,10 @@ def calculate_trend(annual):
             "first_mean": before,
             "last_mean": after,
             "absolute_change": after - before,
-            "percent_change": (after - before) / before * 100 if before > 0 else None,
+            # Undefined from a zero base and suppressed from a near-zero base.
+            "percent_change": (after - before) / before * 100
+            if before >= MIN_PERCENT_BASE_EVENTS
+            else None,
         }
     for i, row in enumerate(annual):
         window = annual[max(0, i - 4) : i + 1]
@@ -187,24 +272,15 @@ def calculate_trend(annual):
             if regression
             else None
         )
-    insight = "Insufficient well-covered years for a ten-year trend comparison."
-    if comparison:
-        change = comparison["percent_change"]
-        windows = f"{comparison['first_window'][0]}-{comparison['first_window'][1]} versus {comparison['last_window'][0]}-{comparison['last_window'][1]}"
-        if change is None:
-            insight = f"Mean annual events changed from 0 to {comparison['last_mean']:.1f} ({windows}); percentage change is undefined."
-        else:
-            direction = (
-                "increased" if change > 0 else "decreased" if change < 0 else "changed"
-            )
-            insight = f"Mean annual heatwave events {direction} by {abs(change):.1f}% ({windows}, five-year means). This is descriptive, not proof of causation or statistical significance."
-    elif regression:
-        insight = f"Linear regression estimates {regression['slope_events_per_decade']:+.2f} events per decade across {regression['years_used']} well-covered years. This is descriptive, without a significance claim."
+    mk = mann_kendall(
+        [a["year"] for a in eligible], [a["event_count"] for a in eligible]
+    )
     return {
-        "method": "five-year endpoint means; ordinary least squares; trailing five-year mean",
+        "method": "five-year endpoint means; Mann-Kendall with Sen's slope; ordinary least squares; trailing five-year mean",
         "comparison": comparison,
         "regression": regression,
-        "insight": insight,
+        "mann_kendall": mk,
+        "insight": describe_trend(comparison, regression, mk),
         "duration_slope_days_per_decade": regression_slope(
             annual, "mean_event_duration_days"
         ),
