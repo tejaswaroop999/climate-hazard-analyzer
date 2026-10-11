@@ -12,3 +12,6 @@ coverage/
 .DS_Store
 tmp/
 *.tsbuildinfo
+FINAL_REVIEW.md
+.ruff_cache/
+INTERVIEW_CRASH_COURSE.md

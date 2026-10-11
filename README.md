@@ -4,9 +4,11 @@ A React + FastAPI application for exploring historical heatwave frequency, durat
 
 **Scope:** Heatwaves only. Search a city or enter latitude/longitude. City names resolve to a representative point; the result is for an ERA5 grid cell, not a city-wide or state-wide spatial average. No sample metrics are presented as live results.
 
+**Live demo:** _add deployed URL_
+
 ## Screenshots
 
-Placeholder: add a desktop results screenshot and a mobile screenshot after running the application against real data. Do not include the confidential case-study PDF.
+_Add a desktop results screenshot and a mobile screenshot._
 
 ## Architecture
 
@@ -28,7 +30,8 @@ The browser calls only `/api/v1`. Vite proxies to FastAPI during development; ng
 - React, TypeScript and Vite: a small, typed client without an unnecessary application server.
 - Recharts: interactive annual plots, with accessible tables containing exact data.
 - FastAPI/Pydantic: explicit validation, async I/O, generated API documentation.
-- NumPy: transparent linear percentile and ordinary least squares calculations; pandas/scipy are unnecessary for this small daily series.
+- NumPy: percentile, ordinary least squares and Mann-Kendall written out in a few readable lines; pandas/scipy are unnecessary for one daily series per request.
+- Leaflet (plain, no wrapper): click-to-pick map with OpenStreetMap tiles, lazy-loaded so it does not slow first paint.
 - PyMongo async driver: direct MongoDB operations without an ORM or deprecated Motor dependency.
 - MongoDB: document-shaped analysis responses, reusable weather blocks, unique indexes and TTL retention.
 
@@ -80,7 +83,9 @@ Open http://localhost:5173. For custom backend settings, create `backend/.env` o
 | `MONGO_DATABASE` | `climate` | Database name |
 | `CORS_ORIGINS` | localhost ports 5173, 8080 | Comma-separated permitted browser origins; empty for same-origin only |
 | `CACHE_TTL_DAYS` | `30` | Raw and processed cache freshness |
-| `RATE_LIMIT_PER_MINUTE` | `20` | Per-client limit, per application process |
+| `RATE_LIMIT_PER_MINUTE` | `20` | Per-client analysis requests per minute, per process |
+| `SEARCH_RATE_LIMIT_PER_MINUTE` | `60` | Separate per-client city-search budget, so typing cannot block analysis |
+| `TRUSTED_PROXY_HOPS` | `0` | Reverse proxies in front of the app. The client is the address this many entries from the right of `X-Forwarded-For`; left-hand entries are client-supplied and ignored. `1` for Compose (nginx) and Render |
 | `PORT` | `8000` | Root Dockerfile HTTP port |
 | `FORWARDED_ALLOW_IPS` | Uvicorn default: loopback | Trusted proxy addresses; see security notes |
 | `TEST_MONGO_URI` | unset | Enables opt-in real MongoDB integration tests |
@@ -106,9 +111,13 @@ The threshold stays fixed when the analysis range changes. A pooled annual thres
 
 ### Honest trend reporting
 
+Annual heatwave counts at one point are small integers (often 0-3), so a headline like "heatwaves increased 400%" can come from 1 event versus 5. The app avoids that:
+
+- **Significance:** a two-sided **Mann-Kendall** test (tie-corrected, p < 0.05) with **Sen's slope** in events/decade, over at least ten well-covered years. Both are rank-based, so one extreme year cannot drive the result. The test assumes independent years; serial correlation would make p-values optimistic, and no pre-whitening is applied.
+- **Insight text** leads with absolute numbers: mean events/year in the **first five versus last five calendar years** (non-overlapping, all ten years must pass coverage), followed by the Mann-Kendall verdict. Example from real data (Hyderabad, 1990-2025): "Heatwaves averaged 1.2 events/year in 1990-1994 and 0.4 in 2021-2025. Mann-Kendall finds no statistically significant trend (p = 0.50)". The earlier version said "decreased by 66.7%" for the same data.
+- **Percentages** appear in the insight only when the trend is significant *and* the early window averages at least one event a year. Below that, `percent_change` is `null` in the API.
+- Ordinary least squares (events/decade, R-squared) is still returned and drawn as a dashed visual guide, but it is not used for claims: count data violates its normal-residual assumption.
 - Trailing five-year event mean uses five actual calendar years, all with >=95% coverage. No shorter early-window averages are shown.
-- Ordinary least squares estimates annual event-count slope, reported per decade, using at least ten eligible years and actual calendar-year spacing. R-squared is returned; it is null for constant counts. No p-value or significance claim is made.
-- A percentage insight compares the **first five versus last five calendar-year means**, only for periods of at least ten years and when all ten endpoint years pass coverage checks. Windows do not overlap. If the initial mean is zero, percentage change is undefined and the insight reports absolute means.
 - Duration and total heatwave-day regression slopes are also returned. Duration excludes no-event years (undefined duration), so it describes years with events rather than treating absence as a zero-day event.
 - Coverage below 95% excludes a year from trend estimation; observed annual counts remain available. Even 95% coverage can miss extremes or split events. This is descriptive analysis, not causal attribution, a health warning, or proof of statistical significance.
 
@@ -125,7 +134,7 @@ Two collections use documents shaped as `{key, created_at, expires_at, payload}`
 - `weather`: reusable **decade blocks**, keyed by exact requested coordinates, block bounds, model, unit, timezone mode and schema version. The current decade ends at the last completed year. Raw daily values are stored with grid/timezone metadata, then cleaned by the versioned engine; this preserves an audit trail of noisy input.
 - `analyses`: processed JSON, keyed by coordinates, full-year range, hazard, baseline, model, timezone, units and algorithm version.
 
-Keys are SHA-256 of canonical sorted JSON. Each collection has a unique key index and an expiry TTL index. Reads independently check `expires_at`, because MongoDB TTL deletion is asynchronous. Cold results are persisted and read back before returning. Freshness defaults to 30 days because historical reanalysis may be revised. Changing the algorithm invalidates processed results while retaining reusable weather blocks. Coordinates are not silently rounded.
+Keys are SHA-256 of canonical sorted JSON. Each collection has a unique key index and an expiry TTL index. Reads independently check `expires_at`, because MongoDB TTL deletion is asynchronous. Cold results are persisted and read back before returning. Freshness defaults to 30 days because historical reanalysis may be revised. Changing the algorithm invalidates processed results while retaining reusable weather blocks. Coordinates are rounded to 0.01 degrees (~1 km) on input and echoed back in `region`; the ERA5 grid is ~0.25 degrees, so this only matters on a cell boundary, and it stops near-identical points from fragmenting the cache or forcing new downloads.
 
 Bounded lock arrays coalesce duplicate requests/raw block downloads within one process. Four analyses and three upstream HTTP requests can run concurrently. Across multiple processes/replicas, unique MongoDB indexes protect document integrity but do not provide a distributed download lock.
 
@@ -145,7 +154,7 @@ Bounded lock arrays coalesce duplicate requests/raw block downloads within one p
 
 Response keys: `region`, `period`, `threshold`, `summary`, `annual_metrics`, `events`, `trend`, `data_quality`, `baseline_data_quality`, `source`, `algorithm_version`, `cache`.
 
-Errors: 422 invalid input/insufficient baseline; 413 oversized body; 429 rate limit (with Retry-After); 502 provider failure/malformed response; 503 storage unavailable; 504 overall analysis deadline. Unexpected errors return a generic 500 and are logged server-side.
+Errors: 422 invalid input/insufficient baseline (validation errors list field and message, never the raw input); 413 oversized body; 429 rate limit (with Retry-After); 502 provider failure/malformed response; 503 storage unavailable; 504 overall analysis deadline. Unexpected errors return a generic 500 and are logged server-side.
 
 ## Security and performance
 
@@ -173,9 +182,7 @@ npm run build
 npm audit
 ```
 
-Backend tests cover exact 2/3-day boundaries, equality, multiple/interrupted events, missing values and sparse dates, percentile baseline coverage, duplicates/outliers, leap-year/calendar aggregation, cross-year events, partial-year exclusions, trends and zero denominators, invalid inputs, upstream failures/retries, request limits and caching. MongoDB integration is opt-in locally and enabled in CI. Frontend tests cover form defaults, invalid range, API error/retry state and CSV safety.
-
-See `VERIFICATION.md` for checks actually run and any remaining infrastructure limits. Synthetic data exists only in tests; integration checks against the real provider must remain distinguishable from unit tests.
+Backend tests (51, including opt-in MongoDB integration) cover 2/3/4+/10-day runs, values equal to and just above the threshold, two separate events, missing days and sparse dates, leap years, cross-year events, partial and single-year periods, physical-range limits, duplicates and conflicts, baseline coverage, Mann-Kendall known values and outlier robustness, suppression of percentages from a near-zero base, invalid and overflowing inputs, upstream failures/retries, request limits and caching. Frontend tests cover form defaults, invalid range, API error/retry state and CSV formula-injection safety. Lint: `ruff check backend` (config in `backend/ruff.toml`).
 
 ## Deployment
 
@@ -191,12 +198,14 @@ Do not claim deployment until the URL responds and a real analysis/cache hit has
 - Point/grid-cell analysis only; no polygon/state area weighting or bounding-box averaging. City selection satisfies the location workflow without implying spatial averaging.
 - The fixed 1991-2020 reference overlaps some historical analysis periods and is not a preindustrial reference. Changing the baseline is a deliberate algorithm/version change.
 - Screening thresholds, pooled seasonality, 95% coverage tolerance, boundary truncation and reanalysis resolution limit interpretation. There is no uncertainty interval or autocorrelation-adjusted significance test.
-- No authentication is provided for this public read/compute dashboard. Public deployments need shared quotas, monitoring and a cost budget. Exact coordinate cache keys can be fragmented by nearly identical requests.
+- No authentication is provided for this public read/compute dashboard. Public deployments need shared quotas, monitoring and a cost budget.
+- Rate limits are in-process memory: they reset on restart and are per replica. `TRUSTED_PROXY_HOPS` must match the real proxy chain; too low groups all users under the proxy address, too high lets clients spoof their identity.
 - Upstream terms/quotas and revisions can change; caching reduces but does not eliminate dependence on the provider.
-- Future: seasonally varying percentile, sensitivity analysis, boundary context, async job queue, distributed quotas, spatially weighted polygons, map selection, event CSV, and carefully justified uncertainty methods. CSV annual export and linear regression are already included; PDF export, maps and Mann-Kendall are intentionally deferred.
+- Future: calendar-day (seasonal) percentile threshold, autocorrelation-corrected Mann-Kendall, sensitivity analysis to the 95th/3-day choices, async job queue for cold requests, Redis-backed rate limits, bounding-box/polygon averaging, event CSV and PDF report. Map selection, annual CSV export, linear regression and Mann-Kendall are included.
 
 ## AI tools used
 
-OpenAI Codex was used to propose the architecture and methodology, implement the frontend/backend, develop tests, run available checks, review edge cases and draft documentation. The submission author should review and understand the implementation, reproduce validation, and take responsibility for the final submission. This repository does not claim that the author independently performed reviews or checks they have not yet performed.
+- **OpenAI Codex**: proposed the initial architecture and methodology, wrote most of the first implementation and tests, and drafted documentation.
+- **Claude Code**: final review against the brief. It found the misleading percentage insight, an unhandled 500 on overflowing numbers (`1e999`), and cache fragmentation from unrounded coordinates; it added Mann-Kendall/Sen's slope, the map picker and the extra edge-case tests.
 
-Use `INTERVIEW_NOTES.md` for the walkthrough and practice changes. Before submitting, replace the screenshot placeholder, verify a public repository and deployed URL, review all decisions, and complete any required disclosure in the submission form. The confidential brief is excluded from Git.
+I reviewed the changes, ran the checks listed above, and can explain or change any part of the code.
