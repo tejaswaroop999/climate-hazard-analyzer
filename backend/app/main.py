@@ -1,21 +1,24 @@
 import asyncio
 import logging
 import time
-from pathlib import Path
 from collections import OrderedDict, deque
 from contextlib import asynccontextmanager
+from pathlib import Path
+
 import httpx
 from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pymongo.errors import PyMongoError
+
 from app.core.config import get_settings
 from app.repositories.cache import MongoCache
 from app.schemas import AnalysisRequest
 from app.services.analysis import AnalysisService
 from app.services.climate import DataQualityError
-from app.services.weather import WeatherProvider, WeatherError
+from app.services.weather import WeatherError, WeatherProvider
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -48,19 +51,38 @@ clients = OrderedDict()
 MAX_CLIENTS = 10000
 
 
+def client_ip(request: Request) -> str:
+    """Rightmost addresses are added by our own proxies; anything left of
+    those is client-supplied and spoofable, so it is never used."""
+    hops = settings.trusted_proxy_hops
+    if hops:
+        forwarded = [
+            part.strip()
+            for part in request.headers.get("x-forwarded-for", "").split(",")
+            if part.strip()
+        ]
+        if len(forwarded) >= hops:
+            return forwarded[-hops]
+    return request.client.host if request.client else "unknown"
+
+
 @app.middleware("http")
 async def protections(request: Request, call_next):
-    if request.url.path.startswith("/api/v1/") and request.url.path not in (
-        "/api/v1/health",
-        "/api/v1/ready",
-    ):
-        identity = request.client.host if request.client else "unknown"
+    path = request.url.path
+    if path.startswith("/api/v1/") and path not in ("/api/v1/health", "/api/v1/ready"):
+        scope = "search" if path == "/api/v1/regions/search" else "analyze"
+        limit = (
+            settings.search_rate_limit_per_minute
+            if scope == "search"
+            else settings.rate_limit_per_minute
+        )
+        identity = (client_ip(request), scope)
         now = time.monotonic()
         bucket = clients.setdefault(identity, deque())
         clients.move_to_end(identity)
         while bucket and bucket[0] <= now - 60:
             bucket.popleft()
-        if len(bucket) >= settings.rate_limit_per_minute:
+        if len(bucket) >= limit:
             return JSONResponse(
                 {"detail": "Too many requests. Try again shortly."},
                 status_code=429,
@@ -98,6 +120,16 @@ app.add_middleware(
     allow_methods=["GET", "POST"],
     allow_headers=["Content-Type"],
 )
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error(request, exc):
+    # Never echo raw input: it can be non-JSON-safe (1e999 parses as inf) or abusive.
+    errors = [
+        {"loc": list(e["loc"]), "msg": e["msg"], "type": e["type"]}
+        for e in exc.errors()
+    ]
+    return JSONResponse({"detail": errors}, status_code=422)
 
 
 @app.exception_handler(WeatherError)
@@ -173,7 +205,7 @@ if static_directory.is_dir():
         return FileResponse(
             static_directory / "index.html",
             headers={
-                "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
+                "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: https://tile.openstreetmap.org; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
                 "X-Frame-Options": "DENY",
             },
         )

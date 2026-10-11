@@ -15,3 +15,8 @@ services:
         value: "30"
       - key: RATE_LIMIT_PER_MINUTE
         value: "20"
+      - key: SEARCH_RATE_LIMIT_PER_MINUTE
+        value: "60"
+      # Render's proxy appends the client address; verify after first deploy.
+      - key: TRUSTED_PROXY_HOPS
+        value: "1"
